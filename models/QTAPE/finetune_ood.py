@@ -23,6 +23,7 @@ import loss
 import models
 import math
 from tqdm import tqdm
+from accelerate import Accelerator
 import options
 samples_num = 300
 test_size = 0.8
@@ -36,6 +37,8 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
     try:
         if args.h == "heisenberg_1d":
             finetune_path = "/heisenberg_1d/n{samples_num}|X(coupling, meas{shots})_y(energy,entropy,corrs)_q{q}.csv".format(samples_num=samples_num, shots=shots_num, q=qubits_num)
+            file_path_tr = f"../dataset_generation/heisenberg_1d/n{samples_num}|X(coupling, meas{shots_num})_y(energy,entropy,corrs)_q{qubits_num}.csv"
+            file_path_te = f"../dataset_generation/heisenberg_2d/n300|X(coupling, meas64)_y(energy,entropy,corrs)_q(10, 10).csv"
             #test_ft_path = "/heisenberg_1d/n1700|X(coupling, meas{shots})_y(energy,entropy,corrs)_q{q}.csv".format(shots=shots_num, q=qubits_num)
         elif args.h == "heisenberg_2d":
             finetune_path = "/heisenberg_2d/n{samples_num}|X(coupling, meas{shots})_y(energy,entropy,corrs)_q({nx}, {ny}).csv".format(samples_num=samples_num, shots=shots_num, nx=args.nx, ny=args.ny)    

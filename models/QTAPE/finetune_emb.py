@@ -15,9 +15,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
+
+
 import utils
 import loss
 import models
@@ -28,7 +27,7 @@ samples_num = 300
 test_size = 0.8
 device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
 n_layers = 8
-def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, random_measurements, alpha):
+def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, random_measurements, sample_rate):
     utils.fix_seed(args.seed)
     qubits_num = qubits_num
     shots_num = shots 
@@ -62,12 +61,15 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
         meas_records = utils.generate_random_measurement_outcomes_vector(samples_num, qubits_num, shots_num).reshape(-1, qubits_num, shots_num)
     elif random_measurements == False:
         meas_records = np.array([utils.read_matrix_v2(x) for x in df['measurement_samples'].values]).reshape(-1, qubits_num, shots_num)
+        print(meas_records.shape)
+        meas_records = meas_records[:, :, :sample_rate]
     else:
         raise ValueError("Random measurements should be either True or False.")
   
     all_idx = np.arange(samples_num)
     batch_conditions = conditions[all_idx]
     batch_measures = meas_records[all_idx]
+    shots_num = batch_measures.shape[2]
     cls_token = torch.zeros((samples_num, shots_num, 1), dtype=torch.long)
     batch_measures = torch.cat((cls_token, torch.tensor(batch_measures).permute(0, 2, 1).long()), dim=2).permute(0, 2, 1).float()
     project_layer = -1
@@ -84,8 +86,7 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
     
     # print basic information 
     print(f"Hamiltonian:{args.h}, qubits:{qubits_num}, shots:{shots_num}, samples:{samples_num}, task:{task}, random_measurements:{random_measurements}")
-    embedding_path = "save/embeddings/{}_embeddings_q{}_s{}_rm{}.pkl".format(args.h, qubits_num, shots_num, random_measurements)
-
+    embedding_path = "save/embeddings/rebuttal/{}_embeddings_q{}_s{}_rm{}_sr{}.pkl".format(args.h, qubits_num, 512, random_measurements, sample_rate)
     try:    
         with open(embedding_path, "rb") as f:
             all_embedding = pickle.load(f)
@@ -103,6 +104,7 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
     
     train_sample_idx = np.random.choice(range(train_samples), train_samples, replace=False)
     test_sample_idx = np.arange(100, test_samples, 1)
+
     X_train = all_embedding[train_sample_idx]
     y_train = y_approx[train_sample_idx]
     X_test = all_embedding[test_sample_idx]
@@ -151,7 +153,7 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
             input, target = input.to(device, non_blocking=True), target.to(device, non_blocking=True) 
             output = finetune_model(input)
             
-            train_loss = criterion(output, target) + finetune_model.l2_regularization(alpha)
+            train_loss = criterion(output, target) + finetune_model.l2_regularization(0.001)
             gradients = torch.autograd.grad(train_loss, finetune_model.parameters(), retain_graph=False, allow_unused=True)
             for param, grad in zip(finetune_model.parameters(), gradients):
                 param.grad = grad
@@ -178,41 +180,24 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
         avg_rmse_loss = test_loss / len(test_loader)
         print("Test Loss: {}".format(avg_rmse_loss.item()))
         result = avg_rmse_loss.item()
-    
-    # save models
-    '''
-    if args.h == "heisenberg_1d" or args.h == "tfim":
-        torch.save(finetune_model.state_dict(), "models/QTAPE/save/trained_models/{}_finetune_q{}_s{}_ntr{}_ep{}_rm{}_seed{}.pt".format(args.h, qubits_num, shots_num, train_samples, epochs, random_measurements, args.seed))
-    elif args.h == "heisenberg_2d":
-        torch.save(finetune_model.state_dict(), "models/QTAPE/save/trained_models/{}_finetune_q({},{})_s{}_ntr{}_ep{}_rm{}.pt".format(args.h, args.nx, args.ny, shots_num, train_samples, epochs, random_measurements))
-    '''
+
     return result, train_time, total_params
 
 if __name__ == "__main__":
     args = options.args_parser()
-    qubits_list = [127] # 8, 10, 12, 16, 25, 31, 48, 63, 100, 
-    train_samples_list = [100] # [20, 50, 90] 20,40,60,80, 63, 100, 
+    qubits_list = [127,100,63] # 8, 10, 12, 16, 25, 31, 48, 63, 100, 
+    train_samples_list = [20, 60, 100] # [20, 50, 90] 20,40,60,80, 63, 100, 
     test_samples = 200
     task = args.t
     random_measurements = args.rm
     pre_train = False
-    shots_num = args.s2
-    '''
+    shots_num = 512 # args.s2
     for qubits_num in qubits_list:
         for train_samples in train_samples_list:
-            tloss, train_time = main(args, qubits_num, args.s2, train_samples, test_samples, task, pre_train, args.rm)
-            with open("models/QTAPE/results/n_layers_fixed_8/new_data/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}.txt".format(hams=args.h, task=task, pt=pre_train, test_samples=test_samples, rm=args.rm, shots=args.s2,seeds=args.seed), "a") as f:
-                f.write("qubits: {}, train_samples: {}, test loss: {}, train time: {}\n".format(qubits_num, train_samples, tloss, train_time))
-            f.close()
-    print("finetuning is done.")
-    '''
-    for qubits_num in qubits_list:
-        for train_samples in train_samples_list:
-            alphas = np.logspace(-5, 5, 100)
-            for alpha in alphas:
-                tloss, train_time,_ = main(args, qubits_num, shots_num, train_samples, test_samples, "correlation", False, False, alpha)
-                with open("results/n_layers_fixed_8/why/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}_v2.txt".format(hams=args.h, task="correlation", pt=pre_train, test_samples=test_samples, rm=False, shots=shots_num,seeds=args.seed), "a") as f:
-                    f.write("alpha: {}, test loss: {}, train time: {}\n".format(alpha, tloss, train_time))
+            for sample_rate in [1, 8, 64, 512]:
+                tloss, train_time,_ = main(args, qubits_num, shots_num, train_samples, test_samples, args.t, False, False, sample_rate)
+                with open("results/n_layers_fixed_8/rebuttal/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}_emb.txt".format(hams=args.h, task=args.t, pt=pre_train, test_samples=test_samples, rm=False, shots=shots_num,seeds=args.seed), "a") as f:
+                    f.write("qubits_num:{}, train_samples: {}, sample_rate: {}, test loss: {}, train time: {}\n".format(qubits_num, train_samples, sample_rate, tloss, train_time))
                 f.close()
     
 

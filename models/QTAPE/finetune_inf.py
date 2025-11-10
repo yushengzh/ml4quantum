@@ -24,24 +24,62 @@ import models
 import math
 from tqdm import tqdm
 import options
-samples_num = 300
+from sklearn.linear_model import Ridge, Lasso, LinearRegression
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import root_mean_squared_error
+from sklearn.kernel_approximation import RBFSampler
 test_size = 0.8
-device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
+device = 'cuda:4' if torch.cuda.is_available() else 'cpu'
 n_layers = 8
+
+
+def objective(trial, model, X_train, X_test, y_train, y_test):
+    _threshold = trial.suggest_float("variance_threshold", 0.0, 1.0) 
+    _alpha = trial.suggest_loguniform("ridge_alpha", 1, 1e5) 
+    _gamma = trial.suggest_loguniform("rbf_gamma", 1e-2, 1e2)
+    _n_components = trial.suggest_int("rbf_n_components", 10, 1000)
+    global regressor
+    selector = VarianceThreshold(threshold=_threshold)
+    rbf_feature = RBFSampler(gamma=_gamma, n_components=_n_components, random_state=2024)
+    
+    X_train_selected = selector.fit_transform(X_train)
+    X_test_selected = selector.transform(X_test)
+    X_train_rff = rbf_feature.fit_transform(X_train_selected)
+    X_test_rff = rbf_feature.transform(X_test_selected)
+    X_train_combined = np.hstack([X_train,X_train_selected,X_train_rff])
+    X_test_combined = np.hstack([X_test,X_test_selected,X_test_rff])
+    if model == "Ridge":
+        regressor = Ridge(alpha=_alpha)
+    elif model == "Lasso":
+        regressor = Lasso(alpha=_alpha)
+    else:
+        regressor = LinearRegression()
+    regressor.fit(X_train_combined, y_train)
+    y_pred = regressor.predict(X_test_combined)
+    rmse = root_mean_squared_error(y_test, y_pred)
+    return rmse
+
+
 def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, random_measurements, alpha):
     utils.fix_seed(args.seed)
     qubits_num = qubits_num
     shots_num = shots 
-    samples_num = 300
+    samples_num = 100000
     try:
         if args.h == "heisenberg_1d":
-            finetune_path = "/heisenberg_1d/n{samples_num}|X(coupling, meas{shots})_y(energy,entropy,corrs)_q{q}.csv".format(samples_num=samples_num, shots=shots_num, q=qubits_num)
+            # qubits_num \in [8,10,12,16,25,31]
+            # infinite shots and 20000 samples
+            finetune_path = "/heisenberg_1d_more/n20000|X(coupling)_y(energy,entropy,corrs)_q{q}.csv".format(q=qubits_num)
+            finetune_path = f"/mnt/urchin/kzou/yushengzh/workplace/ai4q/benchmark/dataset_generation/rebuttal/new_dataset/heisenberg_1d/n100000|X(coupling)_y(energy,entropy,corrs)_q{qubits_num}.csv"
+            test_path = f"/mnt/urchin/kzou/yushengzh/workplace/ai4q/benchmark/dataset_generation/heisenberg_1d_more/n20000|X(coupling)_y(energy,entropy,corrs)_q8.csv"
             #test_ft_path = "/heisenberg_1d/n1700|X(coupling, meas{shots})_y(energy,entropy,corrs)_q{q}.csv".format(shots=shots_num, q=qubits_num)
         elif args.h == "heisenberg_2d":
             finetune_path = "/heisenberg_2d/n{samples_num}|X(coupling, meas{shots})_y(energy,entropy,corrs)_q({nx}, {ny}).csv".format(samples_num=samples_num, shots=shots_num, nx=args.nx, ny=args.ny)    
         elif args.h == "tfim":
             finetune_path = "/tf_ising_1d/n{samples_num}|X(coupling, meas{shots})_y(energy,entropy,corrs)_q{q}.csv".format(samples_num=samples_num, shots=shots_num, q=qubits_num)
-        df = pd.read_csv(target_folder_path + finetune_path)
+        df = pd.read_csv(finetune_path)
+        df_test = pd.read_csv(test_path)
+        #df = pd.concat([df, df_test], ignore_index=True)
         #df_test = pd.read_csv(target_folder_path + test_ft_path)
         #df = pd.concat([df, df_test], ignore_index=True)
         
@@ -53,7 +91,7 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
     dec_voc_size = 512
     hidden_dim = 128
     seq_len = qubits_num + 1
-    samples_num = 300
+    samples_num = 100000
     batch_size = 128
     NUM_WORKERS = 4
 
@@ -72,19 +110,18 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
     batch_measures = torch.cat((cls_token, torch.tensor(batch_measures).permute(0, 2, 1).long()), dim=2).permute(0, 2, 1).float()
     project_layer = -1
     if task == "correlation":
-        y_approx = torch.tensor([utils.read_matrix_v2(x) for x in df['approx_correlation'].values])
-        y_exact = torch.tensor([utils.read_matrix_v2(x) for x in df['exact_correlation'].values])
+        y = torch.tensor([utils.read_matrix_v2(x) for x in df['exact_correlation'].values])
         project_layer = qubits_num * qubits_num
     elif task == "entropy":
-        y_approx = torch.tensor([utils.read_matrix_v2(x) for x in df['approx_entropy'].values])
-        y_exact = torch.tensor([utils.read_matrix_v2(x) for x in df['exact_entropy'].values])
+        y = torch.tensor([utils.read_matrix_v2(x) for x in df['exact_entropy'].values])
+        
         project_layer = qubits_num - 1
     else:
         raise ValueError("Task not found.")
     
     # print basic information 
     print(f"Hamiltonian:{args.h}, qubits:{qubits_num}, shots:{shots_num}, samples:{samples_num}, task:{task}, random_measurements:{random_measurements}")
-    embedding_path = "save/embeddings/{}_embeddings_q{}_s{}_rm{}.pkl".format(args.h, qubits_num, shots_num, random_measurements)
+    embedding_path = "save/embeddings/rebuttal/{}_embeddings_q{}_s{}_rm{}_{}.pkl".format(args.h, qubits_num, shots_num, random_measurements, samples_num)
 
     try:    
         with open(embedding_path, "rb") as f:
@@ -100,13 +137,13 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
             pickle.dump(all_embedding, f)
         print("Embedding file saved.")
 
-    
     train_sample_idx = np.random.choice(range(train_samples), train_samples, replace=False)
-    test_sample_idx = np.arange(100, test_samples, 1)
+    test_sample_idx = np.arange(80000, 100000, 1)
+    print(all_embedding.shape)
     X_train = all_embedding[train_sample_idx]
-    y_train = y_approx[train_sample_idx]
+    y_train = y[train_sample_idx]
     X_test = all_embedding[test_sample_idx]
-    y_test = y_exact[test_sample_idx]
+    y_test = y[test_sample_idx]
     
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset = TensorDataset(X_test, y_test) 
@@ -190,29 +227,21 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
 
 if __name__ == "__main__":
     args = options.args_parser()
-    qubits_list = [127] # 8, 10, 12, 16, 25, 31, 48, 63, 100, 
-    train_samples_list = [100] # [20, 50, 90] 20,40,60,80, 63, 100, 
-    test_samples = 200
+    qubits_list = [8] # 8, 10, 12, 16, 25, 31, 48, 63, 100, 
+    train_samples_list = [100, 1000, 10000, 80000] # [20, 50, 90] 20,40,60,80, 63, 100, 
+    test_samples = 10000
     task = args.t
-    random_measurements = args.rm
+    random_measurements = True # args.rm
     pre_train = False
-    shots_num = args.s2
-    '''
+    shots_list = [1]
+    alpha = 0.001
+
     for qubits_num in qubits_list:
-        for train_samples in train_samples_list:
-            tloss, train_time = main(args, qubits_num, args.s2, train_samples, test_samples, task, pre_train, args.rm)
-            with open("models/QTAPE/results/n_layers_fixed_8/new_data/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}.txt".format(hams=args.h, task=task, pt=pre_train, test_samples=test_samples, rm=args.rm, shots=args.s2,seeds=args.seed), "a") as f:
-                f.write("qubits: {}, train_samples: {}, test loss: {}, train time: {}\n".format(qubits_num, train_samples, tloss, train_time))
-            f.close()
-    print("finetuning is done.")
-    '''
-    for qubits_num in qubits_list:
-        for train_samples in train_samples_list:
-            alphas = np.logspace(-5, 5, 100)
-            for alpha in alphas:
-                tloss, train_time,_ = main(args, qubits_num, shots_num, train_samples, test_samples, "correlation", False, False, alpha)
-                with open("results/n_layers_fixed_8/why/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}_v2.txt".format(hams=args.h, task="correlation", pt=pre_train, test_samples=test_samples, rm=False, shots=shots_num,seeds=args.seed), "a") as f:
-                    f.write("alpha: {}, test loss: {}, train time: {}\n".format(alpha, tloss, train_time))
+        for shots_num in shots_list:
+            for train_samples in train_samples_list:
+                tloss, train_time,_ = main(args, qubits_num, shots_num, train_samples, test_samples, task, pre_train, random_measurements, alpha)
+                with open("results/n_layers_fixed_8/rebuttal/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_sd{seeds}.txt".format(hams=args.h, task=task, pt=pre_train, test_samples=test_samples, rm=True, seeds=args.seed), "a") as f:
+                    f.write("qubits_num: {}, shots_num: {}, train_samples: {}, test loss: {}, train time: {}\n".format(qubits_num, shots_num, train_samples, tloss, train_time))
                 f.close()
     
 
