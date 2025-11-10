@@ -191,28 +191,13 @@ def main(args, qubits_num, shots, train_samples, test_samples, task, pre_train, 
 if __name__ == "__main__":
     args = options.args_parser()
     qubits_list = [127] # 8, 10, 12, 16, 25, 31, 48, 63, 100, 
-    train_samples_list = [100] # [20, 50, 90] 20,40,60,80, 63, 100, 
+    qubits_num = 8
+    train_samples = 20
     test_samples = 200
     task = args.t
     random_measurements = args.rm
     pre_train = False
     shots_num = args.s2
-    '''
-    for qubits_num in qubits_list:
-        for train_samples in train_samples_list:
-            tloss, train_time = main(args, qubits_num, args.s2, train_samples, test_samples, task, pre_train, args.rm)
-            with open("models/QTAPE/results/n_layers_fixed_8/new_data/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}.txt".format(hams=args.h, task=task, pt=pre_train, test_samples=test_samples, rm=args.rm, shots=args.s2,seeds=args.seed), "a") as f:
-                f.write("qubits: {}, train_samples: {}, test loss: {}, train time: {}\n".format(qubits_num, train_samples, tloss, train_time))
-            f.close()
-    print("finetuning is done.")
-    '''
-    for qubits_num in qubits_list:
-        for train_samples in train_samples_list:
-            alphas = np.logspace(-5, 5, 100)
-            for alpha in alphas:
-                tloss, train_time,_ = main(args, qubits_num, shots_num, train_samples, test_samples, "correlation", False, False, alpha)
-                with open("results/n_layers_fixed_8/why/{hams}_{task}_rmse_pt{pt}_{test_samples}_rm{rm}_s{shots}_sd{seeds}_v2.txt".format(hams=args.h, task="correlation", pt=pre_train, test_samples=test_samples, rm=False, shots=shots_num,seeds=args.seed), "a") as f:
-                    f.write("alpha: {}, test loss: {}, train time: {}\n".format(alpha, tloss, train_time))
-                f.close()
     
+    tloss, train_time = main(args, qubits_num, args.s2, train_samples, test_samples, task, pre_train, args.rm)
 
