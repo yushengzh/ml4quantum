@@ -1,3 +1,5 @@
+
+
 # Learning for Quantum Systems
 
 Released code for the Paper *[Rethink the Role of Deep Learning towards Large-scale Quantum Systems](https://arxiv.org/pdf/2505.13852)*
@@ -25,7 +27,7 @@ You can customize the dataset generation by modifying the following parameters i
 - `--shots`(`-s`): Number of measurement shots per sample
 - `--qubits` (`-q`): Number of qubits (Size of the Hamitonian system)
 >
-    julia dataset_generation/generation_heisenberg_1d.jl -n 300 -s 1024 -q 8
+    julia generation_heisenberg_1d.jl -n 300 -s 1024 -q 8
 
 
 <!--
@@ -43,4 +45,3 @@ If you find the source code and datasets useful in your research, please cite:
     booktitle={International Conference on Machine Learning (ICML)},
     year={2025}
     }
-
